@@ -3,18 +3,27 @@ import time
 import cv2
 import numpy as np
 import os
+import pytesseract
 
-# --- CONFIGURACIÓN ---
+# --- CONFIGURACIÓN DE RUTAS ---
 ADB_PATH = r"C:\Program Files\BlueStacks_nxt\HD-Adb.exe"
 DEVICE = "127.0.0.1:5555"
 COFRES_POR_LOTE = 6
 
-# 1. COORDENADAS PARA VISIÓN (Detectar color en la tapa)
+# Configuración de Tesseract (Ajusta la ruta si se instaló en otra carpeta)
+pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+
+# --- COORDENADAS DE VISIÓN (Tapas y Nombres) ---
 BASE_Y_COLOR = 517
 PASO_Y = 186
 TAPAS_COFRES = [(140, BASE_Y_COLOR + (i * PASO_Y)) for i in range(COFRES_POR_LOTE)]
 
-# 2. COORDENADAS PARA ACCIÓN (Tus coordenadas originales confirmadas)
+# Coordenadas que me pasaste para los recuadros de los nombres
+X_START_TEXT, X_END_TEXT = 430, 830
+BASE_Y_TEXT_START = 484
+BASE_Y_TEXT_END = 526
+
+# --- COORDENADAS DE ACCIÓN (Tus coordenadas originales confirmadas)
 BOTONES_OPEN = [
     (950, 570), 
     (920, 750), 
@@ -25,13 +34,9 @@ BOTONES_OPEN = [
 ]
 X_CLEAR_ALL, Y_CLEAR_ALL = 230, 1780
 
+# --- ESTRUCTURAS DE ALMACENAMIENTO DE DATOS ---
 cajas_totales = 0
-stats_globales = {
-    "Amarillo_Nivel_5": 0,
-    "Azul_Nivel_3": 0,
-    "Verde_Nivel_2": 0,
-    "Nivel_Desconocido": 0
-}
+registro_jugadores = {}  # Formato: {"JugadorName": {"Azul_Nivel_3": X, ...}}
 
 def capturar_pantalla():
     archivo_android = "/sdcard/screen_tmp.png"
@@ -50,7 +55,6 @@ def capturar_pantalla():
         return None
 
 def detectar_nivel(img, x, y):
-    # Expandimos un poco el área de recorte (de 10 a 15) para tolerar mejor las variaciones
     crop = img[y-15:y+15, x-15:x+15]
     hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
     
@@ -63,9 +67,35 @@ def detectar_nivel(img, x, y):
         
     return "Nivel_Desconocido"
 
+def leer_nombre_jugador(img, indice_cofre):
+    """Recorta el área del texto, aplica filtros de imagen y extrae el nombre con OCR"""
+    # Calculamos la Y dinámicamente para el cofre actual
+    y_start = BASE_Y_TEXT_START + (indice_cofre * PASO_Y)
+    y_end = BASE_Y_TEXT_END + (indice_cofre * PASO_Y)
+    
+    # Recorte de la zona del texto
+    crop = img[y_start:y_end, X_START_TEXT:X_END_TEXT]
+    
+    # Procesamiento de imagen para mejorar la lectura del OCR
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    # Convertimos a blanco y negro puro (Thresholding binarizado)
+    _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY_INV)
+    
+    # Pasar a Tesseract config `--psm 7` (Asume que es una sola línea de texto)
+    config_ocr = r'--psm 7 -c tessedit_char_whitelist=abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+    texto_extraido = pytesseract.image_to_string(thresh, config=config_ocr).strip()
+    
+    # Limpieza básica: quitar el "Brought by" si el OCR lo llega a capturar
+    if "Brought by" in texto_extraido:
+        texto_extraido = texto_extraido.replace("Brought by", "").strip()
+    elif "Brought" in texto_extraido:
+        texto_extraido = texto_extraido.replace("Brought", "").strip()
+    
+    # Si el OCR devuelve vacío, le asignamos un flag genérico
+    return texto_extraido if texto_extraido else "Desconocido_OCR"
+
 def tap(x, y, delay_personalizado=1.0):
     subprocess.run(f'"{ADB_PATH}" -s {DEVICE} shell input tap {x} {y}', shell=True)
-    # Delay dinámico para controlar el lag de internet
     time.sleep(delay_personalizado)
 
 def ejecutar_lote(num_ciclo):
@@ -77,38 +107,47 @@ def ejecutar_lote(num_ciclo):
         print("Saltando lote por falla en captura.")
         return
 
-    # 1. Analizamos la pantalla
+    # 1. ANALIZAR (Color + Nombre en memoria)
+    lote_actual = []
     for i in range(COFRES_POR_LOTE):
         nivel = detectar_nivel(img, *TAPAS_COFRES[i])
-        stats_globales[nivel] += 1
+        jugador = leer_nombre_jugador(img, i)
+        
+        lote_actual.append((jugador, nivel))
         cajas_totales += 1
-        print(f"  -> Espacio {i+1} detectado como: {nivel}")
+        print(f"  -> Espacio {i+1} | Jugador: {jugador} | Cofre: {nivel}")
 
-    # 2. Hacemos los clics con delays más seguros para el lag
+    # 2. ACCIÓN (Clics uno a uno)
     print("\n  [Acción] Ejecutando clics en los botones Open...")
     for i in range(COFRES_POR_LOTE):
         x_btn, y_btn = BOTONES_OPEN[i]
-        print(f"    [*] Enviando clic al botón {i+1} en ({x_btn}, {y_btn})")
-        # Subimos el delay a 1.0 segundos por botón para no saturar al servidor
         tap(x_btn, y_btn, delay_personalizado=1.0)
+        
+        # Guardamos en el diccionario global en este micro-segundo muerto
+        jugador, nivel = lote_actual[i]
+        if jugador not in registro_jugadores:
+            registro_jugadores[jugador] = {"Amarillo_Nivel_5": 0, "Azul_Nivel_3": 0, "Verde_Nivel_2": 0, "Nivel_Desconocido": 0}
+        registro_jugadores[jugador][nivel] += 1
     
-    # 3. Limpiamos lista
+    # 3. LIMPIAR LISTA (Aprovechamos el delay largo aquí)
     print("\n  -> Limpiando lista (Clear All)...")
-    # 3.5 segundos de espera total tras limpiar para asegurar la recarga por red
     tap(X_CLEAR_ALL, Y_CLEAR_ALL, delay_personalizado=2.0)
     
-    print(f"Progreso actual: {cajas_totales} cofres procesados.")
+    print(f"\nProgreso: {cajas_totales} cofres procesados.")
+    print("Estadísticas acumuladas por jugador:")
+    for jug, datos in registro_jugadores.items():
+        print(f"  * {jug}: {datos}")
 
 if __name__ == "__main__":
     ciclos_deseados = 2
     ciclo_actual = 0
     
-    print("Iniciando Bot Clasificador de Cofres (Modo Anti-Lag)...")
+    print("Iniciando Bot Analizador e Historial de Alianza...")
     try:
         while ciclo_actual < ciclos_deseados:
             ciclo_actual += 1
             ejecutar_lote(ciclo_actual)
             
-        print(f"\n[ÉXITO] Meta completada.\nResultado final: {stats_globales}")
+        print(f"\n[ÉXITO] Ejecución terminada.\nReporte Final de la Alianza:\n{registro_jugadores}")
     except KeyboardInterrupt:
-        print(f"\n[BOT DETENIDO]\nResumen guardado: {stats_globales}")
+        print(f"\n[BOT DETENIDO] Reporte acumulado hasta el momento:\n{registro_jugadores}")
