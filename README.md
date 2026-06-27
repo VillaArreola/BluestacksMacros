@@ -1,0 +1,2 @@
+# BluestacksMacros
+Automatizacion en CoS
