@@ -158,12 +158,23 @@ def tap(x, y, delay=1.0):
 
 
 def generar_reporte_bonito():
-    """Genera el reporte de aportaciones e incluye la lista de miembros inactivos"""
+    """Genera el reporte de aportaciones con niveles dinámicos del 1 al 6"""
     print("\n=============================================")
-    print(" 📜 REPORTE DE RECOLECCIÓN Y ACTIVIDAD")
+    print(" 📜 HUNT REPORT")
     print("=============================================")
-    print(f"Fecha/Hora local: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Time (UTC): {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime())}")
     print("---------------------------------------------")
+    
+    # Definimos los niveles que queremos rastrear en orden
+    # Nota: Asegúrate de que las llaves coincidan exactamente con tu diccionario registro_jugadores
+    CONFIG_NIVELES = [
+        ("🟡Lvl6", "Amarillo_Nivel_6"),
+        ("🟡Lvl5", "Amarillo_Nivel_5"),
+        ("🔵Lvl4", "Azul_Nivel_4"),
+        ("🔵Lvl3", "Azul_Nivel_3"),
+        ("🟢Lvl2", "Verde_Nivel_2"),
+        ("🟤Lvl1", "Nivel_1")
+    ]
     
     jugadores_ordenados = sorted(
         registro_jugadores.items(), 
@@ -174,20 +185,31 @@ def generar_reporte_bonito():
     for i, (jugador, datos) in enumerate(jugadores_ordenados):
         total = sum(datos.values())
         if total == 0: continue
-        print(f"{i+1:02d}. 👤 {jugador:<15} 📦 Total: {total} [🟡x{datos['Amarillo_Nivel_5']} | 🔵x{datos['Azul_Nivel_3']} | 🟢x{datos['Verde_Nivel_2']} | 🟤x{datos['Nivel_1']}]")
-    
-    # --- NUEVO: REPORTE DE JUGADORES INACTIVOS (0 COFRES) ---
-    if nombres_maestros:
-        print("---------------------------------------------")
-        print(" 💤 MIEMBROS INACTIVOS EN ESTE REPORTE (0 Cofres)")
-        print("---------------------------------------------")
         
-        # Encontramos quién está en la lista maestra pero no en el registro de cofres
+        # Generar lista dinámica de niveles presentes
+        partes = []
+        for etiqueta, key in CONFIG_NIVELES:
+            if datos.get(key, 0) > 0:
+                partes.append(f"{etiqueta}: {datos[key]}")
+        
+        detalle = " | ".join(partes) if partes else "Sin niveles definidos"
+        print(f"{i+1:02d}. 👤 {jugador:<15} 📦 Total: {total} | {detalle}")
+    
+    # REPORTE DE INACTIVOS (2 columnas)
+    if nombres_maestros:
         activos = set(registro_jugadores.keys())
         inactivos = sorted([j for j in nombres_maestros if j not in activos])
         
-        for idx, inactivo in enumerate(inactivos):
-            print(f"  ❌ {idx+1:02d}. {inactivo}")
+        if inactivos:
+            print("\n---------------------------------------------")
+            print(" 💤 MEMBERS DID NOT HUNT")
+            print("---------------------------------------------")
+            
+            mitad = (len(inactivos) + 1) // 2
+            for i in range(mitad):
+                izq = inactivos[i]
+                der = inactivos[i + mitad] if (i + mitad) < len(inactivos) else ""
+                print(f"  ❌ {izq:<20} | ❌ {der}")
             
     print("=============================================\n")
 def ejecutar_lote(num_ciclo):
