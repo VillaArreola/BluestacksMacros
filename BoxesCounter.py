@@ -1,276 +1,136 @@
-import subprocess
-import time
-import cv2
-import numpy as np
-import os
-import pytesseract
-import csv
+import subprocess, time, cv2, numpy as np, os, pytesseract, csv
 from difflib import get_close_matches
 
-# --- CONFIGURACIÓN DE RUTAS ---
+# --- CONFIG ---
 ADB_PATH = r"C:\Program Files\BlueStacks_nxt\HD-Adb.exe"
 DEVICE = "127.0.0.1:5555"
-COFRES_POR_LOTE = 6
-CSV_FILE = "reporte_alianza.csv"
 TXT_MAESTRO = "jugadores_maestro.txt"
-
-# Configuración de Tesseract
+CSV_FILE = "reporte_alianza.csv"
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
-# --- COORDENADAS DE VISIÓN ---
-BASE_Y_COLOR = 517
-PASO_Y = 186
-TAPAS_COFRES = [(140, BASE_Y_COLOR + (i * PASO_Y)) for i in range(COFRES_POR_LOTE)]
+CONFIG_NIVELES = [("🔺Lvl6", "level_6"), ("🟡Lvl5", "level_5"), ("🟣Lvl4", "level_4"), 
+                  ("🔵Lvl3", "level_3"), ("🟢Lvl2", "level_2"), ("🟤Lvl1", "level_1")]
 
-X_START_TEXT, X_END_TEXT = 430, 830
-BASE_Y_TEXT_START = 484
-BASE_Y_TEXT_END = 526
+registro_jugadores, nombres_maestros = {}, []
 
-# --- COORDENADAS DE ACCIÓN ---
-BOTONES_OPEN = [
-    (950, 570), (920, 750), (910, 930), (900, 1110), (890, 1314), (880, 1501)
-]
-X_CLEAR_ALL, Y_CLEAR_ALL = 230, 1780
-
-# --- ALMACENAMIENTO ---
-cajas_totales = 0
-registro_jugadores = {}  # Se cargará automáticamente del CSV si existe
-nombres_maestros = [] #nombres obtenidos de member.py 
-
-
-def cargar_lista_maestra():
-    """Lee el TXT generado por el otro script para tener la base de la alianza"""
-    global nombres_maestros
+def cargar_datos():
+    global nombres_maestros, registro_jugadores
     if os.path.exists(TXT_MAESTRO):
-        with open(TXT_MAESTRO, mode='r', encoding='utf-8') as f:
-            nombres_maestros = [linea.strip() for linea in f.readlines() if linea.strip()]
-        print(f"[MAESTRO] Se cargaron {len(nombres_maestros)} miembros oficiales de la alianza.")
-    else:
-        print("[WARN] No se encontró 'jugadores_maestro.txt'. El filtro global no estará activo.")
-        nombres_maestros = []
-
-def cargar_desde_csv():
-    """Busca si existe un reporte previo y lo carga en memoria para no perder datos"""
-    global registro_jugadores
+        with open(TXT_MAESTRO, 'r', encoding='utf-8') as f:
+            nombres_maestros = [l.strip().replace('*','') for l in f if l.strip()]
     if os.path.exists(CSV_FILE):
-        try:
-            with open(CSV_FILE, mode='r', encoding='utf-8') as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    jugador = row["Jugador"]
-                    registro_jugadores[jugador] = {
-                        "Nivel_1": int(row.get("Nivel 1", 0)), # Usamos get por si el CSV viejo no lo tiene
-                        "Verde_Nivel_2": int(row.get("Verde Nivel 2", 0)),
-                        "Azul_Nivel_3": int(row.get("Azul Nivel 3", 0)),
-                        "Amarillo_Nivel_5": int(row.get("Amarillo Nivel 5", 0)),
-                        "Nivel_Desconocido": int(row.get("Desconocido", 0))
-                    }
-            print(f"[MEMORIA] Se cargaron {len(registro_jugadores)} jugadores del archivo existente.")
-        except Exception as e:
-            print(f"[WARN] Archivo CSV corrupto o vacío, iniciando historial nuevo. {e}")
-            registro_jugadores = {}
-    else:
-        print("[MEMORIA] No se encontró archivo previo. Iniciando base de datos limpia.")
-        registro_jugadores = {}
+        with open(CSV_FILE, 'r', encoding='utf-8') as f:
+            for row in csv.DictReader(f):
+                jug = row["Jugador"]
+                registro_jugadores[jug] = {k: int(row.get(e, 0)) for e, k in CONFIG_NIVELES}
 
-def guardar_en_csv():
-    """Guarda o actualiza el archivo CSV en tiempo real"""
-    try:
-        with open(CSV_FILE, mode='w', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f)
-            # Agregamos Nivel 1 a los encabezados
-            writer.writerow(["Jugador", "Nivel 1", "Verde Nivel 2", "Azul Nivel 3", "Amarillo Nivel 5", "Desconocido"])
-            for jug, datos in registro_jugadores.items():
-                writer.writerow([
-                    jug, 
-                    datos["Nivel_1"],
-                    datos["Verde_Nivel_2"], 
-                    datos["Azul_Nivel_3"], 
-                    datos["Amarillo_Nivel_5"], 
-                    datos["Nivel_Desconocido"]
-                ])
-    except Exception as e:
-        print(f"[ERROR EXCEL] {e}")
+def guardar_csv():
+    with open(CSV_FILE, 'w', newline='', encoding='utf-8') as f:
+        w = csv.writer(f)
+        w.writerow(["Jugador", "Lvl 1", "Lvl 2", "Lvl 3", "Lvl 4", "Lvl 5", "Lvl 6"])
+        for jug, d in registro_jugadores.items():
+            w.writerow([jug, d.get("level_1",0), d.get("level_2",0), d.get("level_3",0), d.get("level_4",0), d.get("level_5",0), d.get("level_6",0)])
 
-def capturar_pantalla():
-    archivo_android = "/sdcard/screen_tmp.png"
-    archivo_local = "adb_tmp.png"
-    try:
-        subprocess.run(f'"{ADB_PATH}" -s {DEVICE} shell screencap -p {archivo_android}', shell=True, check=True, stdout=subprocess.DEVNULL)
-        subprocess.run(f'"{ADB_PATH}" -s {DEVICE} pull {archivo_android} {archivo_local}', shell=True, check=True, stdout=subprocess.DEVNULL)
-        subprocess.run(f'"{ADB_PATH}" -s {DEVICE} shell rm {archivo_android}', shell=True, check=True, stdout=subprocess.DEVNULL)
-        img = cv2.imread(archivo_local)
-        if os.path.exists(archivo_local):
-            os.remove(archivo_local)
-        return img
-    except Exception as e:
-        print(f"[ERROR ADB] {e}")
-        return None
-
-def detectar_nivel(img, x, y):
-    crop = img[y-15:y+15, x-15:x+15]
-    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+def get_name(img, i):
+    y1, y2 = 484 + (i * 186), 526 + (i * 186)
+    crop = cv2.threshold(cv2.cvtColor(img[y1:y2, 430:830], cv2.COLOR_BGR2GRAY), 120, 255, cv2.THRESH_BINARY_INV)[1]
+    txt = pytesseract.image_to_string(crop, config='--psm 7 -c tessedit_char_whitelist=abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789').strip()
     
-    # Nivel 1 (Gris): hsv(20, 25%, 47%) -> Rango OpenCV: H(0-25), S(30-100), V(90-150)
-    if cv2.countNonZero(cv2.inRange(hsv, np.array([0, 30, 90]), np.array([25, 100, 150]))) > 30:
-        return "Nivel_1"
-    # Amarillo Nivel 5: Alta saturación (>150) y Alto brillo (>150)
-    elif cv2.countNonZero(cv2.inRange(hsv, np.array([10, 150, 150]), np.array([25, 255, 255]))) > 30:
-        return "Amarillo_Nivel_5"
-    elif cv2.countNonZero(cv2.inRange(hsv, np.array([40, 100, 100]), np.array([60, 255, 255]))) > 30:
-        return "Verde_Nivel_2"
-    elif cv2.countNonZero(cv2.inRange(hsv, np.array([90, 100, 100]), np.array([115, 255, 255]))) > 30:
-        return "Azul_Nivel_3"
+    # Correcciones fijas
+    corrections = {"Lyd": "Lyr4", "Lw4": "Lyr4", "rVUASInBan": "FOXSinBan"}
+    txt = corrections.get(txt, txt)
+    
+    # Si lee basura muy larga o palabras clave vacías, lo marcamos como desconocido
+    if txt.lower() in ["re", "r", "e", ""] or len(txt) > 16: return "unknown_player"
+    
+    match = get_close_matches(txt, nombres_maestros or list(registro_jugadores.keys()), n=1, cutoff=0.65)
+    return match[0] if match else txt
+
+def get_level(img, i):
+    hsv = cv2.cvtColor(img[517 + (i * 186)-15:517 + (i * 186)+15, 140-15:140+15], cv2.COLOR_BGR2HSV)
+    # Prioridad 1: Colores definidos (El azul ahora tiene un rango más amplio)
+    if cv2.countNonZero(cv2.inRange(hsv, np.array([90, 40, 40]), np.array([130, 255, 255]))) > 20: return "level_3" # Azul
+    if cv2.countNonZero(cv2.inRange(hsv, np.array([35, 40, 40]), np.array([85, 255, 255]))) > 20: return "level_2"  # Verde
+    if cv2.countNonZero(cv2.inRange(hsv, np.array([130, 40, 40]), np.array([170, 255, 255]))) > 20: return "level_4" # Morado
+    if cv2.countNonZero(cv2.inRange(hsv, np.array([20, 100, 100]), np.array([35, 255, 255]))) > 20: return "level_5" # Amarillo
+    
+    mask_red = cv2.bitwise_or(cv2.inRange(hsv, np.array([0, 100, 100]), np.array([10, 255, 255])), cv2.inRange(hsv, np.array([170, 100, 100]), np.array([180, 255, 255])))
+    if cv2.countNonZero(mask_red) > 20: return "level_6" # Rojo
+    
+    # Prioridad 2: Gris/Madera (Solo si la saturación es muy baja)
+    if cv2.countNonZero(cv2.inRange(hsv, np.array([0, 0, 40]), np.array([180, 80, 200]))) > 20: return "level_1" 
+    
+    return "level_Unknown"
+
+def run_batch():
+    subprocess.run(f'"{ADB_PATH}" -s {DEVICE} shell screencap -p /sdcard/s.png', shell=True, stdout=subprocess.DEVNULL)
+    subprocess.run(f'"{ADB_PATH}" -s {DEVICE} pull /sdcard/s.png adb_tmp.png', shell=True, stdout=subprocess.DEVNULL)
+    img = cv2.imread("adb_tmp.png")
+    if img is None: return False
+    
+    lote = []
+    cofres_validos = 0
+    
+    for i in range(6):
+        jug, niv = get_name(img, i), get_level(img, i)
         
-    return "Nivel_Desconocido"
-
-def leer_nombre_jugador(img, indice_cofre):
-    y_start = BASE_Y_TEXT_START + (indice_cofre * PASO_Y)
-    y_end = BASE_Y_TEXT_END + (indice_cofre * PASO_Y)
-    
-    crop = img[y_start:y_end, X_START_TEXT:X_END_TEXT]
-    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-    _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY_INV)
-    
-    config_ocr = r'--psm 7 -c tessedit_char_whitelist=abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
-    texto = pytesseract.image_to_string(thresh, config=config_ocr).strip()
-    
-    for basurilla in ["Brought by", "Brought", "by"]:
-        texto = texto.replace(basurilla, "").strip()
+        # --- TOLERANCIA CERO A LA BASURA ---
+        if jug == "unknown_player" or niv == "level_Unknown":
+            print(f" -> [{i+1}] Vacío/Basura ignorado")
+            continue
+            
+        cofres_validos += 1
+        if jug not in registro_jugadores:
+            registro_jugadores[jug] = {k: 0 for _, k in CONFIG_NIVELES}
+            
+        lote.append((i, jug, niv))
+        print(f" -> [{i+1}] {jug} => {niv}")
         
-    if not texto:
-        return "unknown_player"
-    
-
-  # --- CAMBIO CRÍTICO: Buscar coincidencias primero en la lista maestra global ---
-    # Si tenemos la lista maestra, comparamos contra los 70 reales, no solo contra el CSV vacío
-    universo_busqueda = nombres_maestros if nombres_maestros else list(registro_jugadores.keys())
-    
-    coincidencias = get_close_matches(texto, universo_busqueda, n=1, cutoff=0.65)
-    
-    if coincidencias:
-        return coincidencias[0]
-    return texto
-
-def tap(x, y, delay=1.0):
-    subprocess.run(f'"{ADB_PATH}" -s {DEVICE} shell input tap {x} {y}', shell=True)
-    time.sleep(delay)
-
+    # Si de los 6 espacios, ninguno fue válido, la lista se acabó.
+    if cofres_validos == 0:
+        print(" [!] No se detectaron cofres válidos. Deteniendo lectura.")
+        return False
+        
+    # Acción: Solo abrimos los cofres que sabemos que existen
+    for i, j, n in lote:
+        x, y = [(950, 570), (920, 750), (910, 930), (900, 1110), (890, 1314), (880, 1501)][i]
+        subprocess.run(f'"{ADB_PATH}" -s {DEVICE} shell input tap {x} {y}', shell=True)
+        if n not in registro_jugadores[j]: registro_jugadores[j][n] = 0
+        registro_jugadores[j][n] += 1
+        time.sleep(1.0)
+        
+    guardar_csv()
+    subprocess.run(f'"{ADB_PATH}" -s {DEVICE} shell input tap 230 1780', shell=True)
+    return True
 
 def generar_reporte_bonito():
-    """Genera el reporte de aportaciones con niveles dinámicos del 1 al 6"""
-    print("\n=============================================")
-    print(" 📜 HUNT REPORT")
-    print("=============================================")
+    total_gral = sum(sum(d.values()) for d in registro_jugadores.values())
+    totales_niv = {k: sum(d.get(k, 0) for d in registro_jugadores.values()) for _, k in CONFIG_NIVELES}
+    
+    print("\n" + "="*45 + "\n 📜 HUNT REPORT\n" + "="*45)
     print(f"Time (UTC): {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime())}")
-    print("---------------------------------------------")
-    
-    # Definimos los niveles que queremos rastrear en orden
-    # Nota: Asegúrate de que las llaves coincidan exactamente con tu diccionario registro_jugadores
-    CONFIG_NIVELES = [
-        ("🟡Lvl6", "Amarillo_Nivel_6"),
-        ("🟡Lvl5", "Amarillo_Nivel_5"),
-        ("🔵Lvl4", "Azul_Nivel_4"),
-        ("🔵Lvl3", "Azul_Nivel_3"),
-        ("🟢Lvl2", "Verde_Nivel_2"),
-        ("🟤Lvl1", "Nivel_1")
-    ]
-    
-    jugadores_ordenados = sorted(
-        registro_jugadores.items(), 
-        key=lambda x: sum(x[1].values()), 
-        reverse=True
-    )
-    
-    for i, (jugador, datos) in enumerate(jugadores_ordenados):
-        total = sum(datos.values())
-        if total == 0: continue
-        
-        # Generar lista dinámica de niveles presentes
-        partes = []
-        for etiqueta, key in CONFIG_NIVELES:
-            if datos.get(key, 0) > 0:
-                partes.append(f"{etiqueta}: {datos[key]}")
-        
-        detalle = " | ".join(partes) if partes else "Sin niveles definidos"
-        print(f"{i+1:02d}. 👤 {jugador:<15} 📦 Total: {total} | {detalle}")
-    
-    # REPORTE DE INACTIVOS (2 columnas)
+    print("-" * 45 + f"\n 📊 TOTAL TODAY: {total_gral}")
+    resumen = [f"{e}: {totales_niv[k]}" for e, k in CONFIG_NIVELES if totales_niv[k] > 0]
+    print(f" 🎯 BREAKDOWN: {' | '.join(resumen)}\n" + "-"*45)
+
+    for i, (jug, d) in enumerate(sorted(registro_jugadores.items(), key=lambda x: sum(x[1].values()), reverse=True)):
+        if sum(d.values()) == 0: continue
+        det = " | ".join([f"{e}: {d[k]}" for e, k in CONFIG_NIVELES if d.get(k, 0) > 0])
+        print(f"{i+1:02d}. 👤 {jug:<15} 📦 Total: {sum(d.values())} | {det}")
+
     if nombres_maestros:
-        activos = set(registro_jugadores.keys())
-        inactivos = sorted([j for j in nombres_maestros if j not in activos])
-        
-        if inactivos:
-            print("\n---------------------------------------------")
-            print(" 💤 MEMBERS DID NOT HUNT")
-            print("---------------------------------------------")
-            
-            mitad = (len(inactivos) + 1) // 2
+        inact = sorted([j for j in nombres_maestros if j not in registro_jugadores or sum(registro_jugadores[j].values()) == 0])
+        if inact:
+            print("\n" + "-"*45 + "\n 💤 MEMBERS DID NOT HUNT\n" + "-"*45)
+            mitad = (len(inact) + 1) // 2
             for i in range(mitad):
-                izq = inactivos[i]
-                der = inactivos[i + mitad] if (i + mitad) < len(inactivos) else ""
+                izq, der = inact[i], (inact[i+mitad] if i+mitad < len(inact) else "")
                 print(f"  ❌ {izq:<20} | ❌ {der}")
-            
-    print("=============================================\n")
-def ejecutar_lote(num_ciclo):
-    global cajas_totales
-    print(f"\n--- Ciclo {num_ciclo} ---")
-    
-    img = capturar_pantalla()
-    if img is None:
-        print("Saltando lote por falla en captura.")
-        return
-
-    lote_actual = []
-    # 1. ANALIZAR Y GUARDAR EN CALIENTE
-    for i in range(COFRES_POR_LOTE):
-        nivel = detectar_nivel(img, *TAPAS_COFRES[i])
-        jugador = leer_nombre_jugador(img, i)
-        
-        # FILTRO ANTI-BASURA: Ignora nombres de menos de 3 caracteres (como "re")
-        if len(jugador) < 3 and jugador != "unknown_player":
-            jugador = "unknown_player"
-            
-        lote_actual.append((jugador, nivel))
-        cajas_totales += 1
-        print(f"  -> [{i+1}] {jugador} => {nivel}")
-        
-        # Guardamos en memoria INMEDIATAMENTE para que el siguiente cofre pueda usarlo de referencia
-        if jugador not in registro_jugadores:
-            registro_jugadores[jugador] = {"Nivel_1": 0, "Verde_Nivel_2": 0, "Azul_Nivel_3": 0, "Amarillo_Nivel_5": 0, "Nivel_Desconocido": 0}
-
-    # 2. ACCIÓN (Abrir cofres físicos y sumar los contadores)
-    print("\n  [Acción] Abriendo cofres...")
-    for i in range(COFRES_POR_LOTE):
-        x_btn, y_btn = BOTONES_OPEN[i]
-        tap(x_btn, y_btn, delay=1.0)
-        
-        jugador, nivel = lote_actual[i]
-        registro_jugadores[jugador][nivel] += 1
-    
-    # 3. Guardado en Excel
-    guardar_en_csv()
-    
-    # 4. Limpiar lista
-    print("\n  -> Limpiando lista (Clear All)...")
-    tap(X_CLEAR_ALL, Y_CLEAR_ALL, delay=2.0)
 
 if __name__ == "__main__":
-    ciclos_deseados = 1  
-    ciclo_actual = 0
-    
-    print("Iniciando Bot Analizador Histórico de Alianza...")
-    cargar_lista_maestra() # <--- 1. Cargar el TXT maestro
-    cargar_desde_csv()     # <--- 2. Cargar el CSV histórico
-    
-    try:
-        while ciclo_actual < ciclos_deseados:
-            ciclo_actual += 1
-            ejecutar_lote(ciclo_actual)
-            
-        print("\n[PROCESO TERMINADO CON ÉXITO]")
-        generar_reporte_bonito()
-        
-    except KeyboardInterrupt:
-        print("\n[BOT INTERRUMPIDO]")
-        generar_reporte_bonito()
+    cargar_datos()
+    for i in range(20):
+        print(f"\n--- Ciclo {i+1} ---")
+        if not run_batch(): break
+        time.sleep(2)
+    generar_reporte_bonito()
